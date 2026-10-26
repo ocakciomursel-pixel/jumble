@@ -396,10 +396,108 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
       storage.setLastReadNotificationTime(account.pubkey, notificationsSeenAt)
 
       client.initUserIndexFromFollowings(account.pubkey, controller.signal)
+
+      const liveSub = client.subscribe(
+        relayList.write.concat(defaultRelays).slice(0, 4),
+        [
+          {
+            kinds: [
+              kinds.Metadata,
+              kinds.Contacts,
+              kinds.Mutelist,
+              kinds.BookmarkList,
+              ExtendedKind.FAVORITE_RELAYS,
+              ExtendedKind.BLOSSOM_SERVER_LIST,
+              kinds.UserEmojiList,
+              kinds.Pinlist,
+              ExtendedKind.PINNED_USERS
+            ],
+            authors: [account.pubkey],
+            since: dayjs().unix()
+          },
+          {
+            kinds: [kinds.Application],
+            authors: [account.pubkey],
+            '#d': [ApplicationDataKey.NOTIFICATIONS_SEEN_AT],
+            since: dayjs().unix()
+          }
+        ],
+        {
+          onevent: async (evt) => {
+            if (controller.signal.aborted || evt.pubkey !== account.pubkey) return
+            if (evt.kind === kinds.Metadata) {
+              const updated = await indexedDb.putReplaceableEvent(evt)
+              if (updated.id === evt.id) {
+                setProfileEvent(updated)
+                setProfile(getProfileFromEvent(updated))
+              }
+            } else if (evt.kind === kinds.Contacts) {
+              const updated = await indexedDb.putReplaceableEvent(evt)
+              if (updated.id === evt.id) {
+                setFollowListEvent(updated)
+                await client.updateFollowListCache(updated)
+              }
+            } else if (evt.kind === kinds.Mutelist) {
+              const updated = await indexedDb.putReplaceableEvent(evt)
+              if (updated.id === evt.id) {
+                setMuteListEvent(updated)
+              }
+            } else if (evt.kind === kinds.BookmarkList) {
+              const updated = await indexedDb.putReplaceableEvent(evt)
+              if (updated.id === evt.id) {
+                setBookmarkListEvent(updated)
+              }
+            } else if (evt.kind === ExtendedKind.FAVORITE_RELAYS) {
+              const updated = await indexedDb.putReplaceableEvent(evt)
+              if (updated.id === evt.id) {
+                setFavoriteRelaysEvent(updated)
+              }
+            } else if (evt.kind === ExtendedKind.BLOSSOM_SERVER_LIST) {
+              await client.updateBlossomServerListEventCache(evt)
+            } else if (evt.kind === kinds.UserEmojiList) {
+              const updated = await indexedDb.putReplaceableEvent(evt)
+              if (updated.id === evt.id) {
+                setUserEmojiListEvent(updated)
+              }
+            } else if (evt.kind === kinds.Pinlist) {
+              const updated = await indexedDb.putReplaceableEvent(evt)
+              if (updated.id === evt.id) {
+                setPinListEvent(updated)
+              }
+            } else if (evt.kind === ExtendedKind.PINNED_USERS) {
+              const updated = await indexedDb.putReplaceableEvent(evt)
+              if (updated.id === evt.id) {
+                setPinnedUsersEvent(updated)
+              }
+            } else if (
+              evt.kind === kinds.Application &&
+              getReplaceableEventIdentifier(evt) === ApplicationDataKey.NOTIFICATIONS_SEEN_AT
+            ) {
+              setNotificationsSeenAt((prev) => {
+                const next = Math.max(prev, evt.created_at)
+                storage.setLastReadNotificationTime(account.pubkey, next)
+                return next
+              })
+            }
+          }
+        }
+      )
+      controller.signal.addEventListener('abort', () => {
+        liveSub.close()
+      })
     }
     init()
+
+    const handleStorageChange = () => {
+      if (!account) return
+      const storedSeenAt = storage.getLastReadNotificationTime(account.pubkey)
+      setNotificationsSeenAt((prev) => Math.max(prev, storedSeenAt))
+    }
+    window.addEventListener('storage', handleStorageChange)
+
     return () => {
       controller.abort()
+      window.removeEventListener('storage', handleStorageChange)
     }
   }, [account])
 
