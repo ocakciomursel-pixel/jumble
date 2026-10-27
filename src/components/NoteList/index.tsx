@@ -109,6 +109,7 @@ const NoteList = forwardRef<
     >([])
     const [filteredNewEvents, setFilteredNewEvents] = useState<Event[]>([])
     const [refreshCount, setRefreshCount] = useState(0)
+    const [resumeCount, setResumeCount] = useState(0)
     const [reachedTimelineEnd, setReachedTimelineEnd] = useState(false)
     const topRef = useRef<HTMLDivElement | null>(null)
     const eventsRef = useRef(events)
@@ -382,18 +383,63 @@ const NoteList = forwardRef<
     }, [JSON.stringify(subRequests), refreshCount, JSON.stringify(showKinds)])
 
     useEffect(() => {
+      let lastHiddenAt = document.visibilityState === 'hidden' ? Date.now() : 0
+      let lastResumeAt = Date.now()
+      const RESUME_COOLDOWN_MS = 15_000
+
+      const triggerResume = () => {
+        const now = Date.now()
+        if (now - lastResumeAt < RESUME_COOLDOWN_MS) return
+        lastResumeAt = now
+        setResumeCount((count) => count + 1)
+      }
+
+      const handleVisibilityChange = () => {
+        if (document.visibilityState === 'hidden') {
+          lastHiddenAt = Date.now()
+          return
+        }
+        if (document.visibilityState === 'visible' && lastHiddenAt > 0) {
+          triggerResume()
+        }
+      }
+
+      const handleOnline = () => {
+        if (document.visibilityState === 'visible') {
+          triggerResume()
+        }
+      }
+
+      const handlePageShow = (event: PageTransitionEvent) => {
+        if (event.persisted) {
+          triggerResume()
+        }
+      }
+
+      document.addEventListener('visibilitychange', handleVisibilityChange)
+      window.addEventListener('online', handleOnline)
+      window.addEventListener('pageshow', handlePageShow)
+      return () => {
+        document.removeEventListener('visibilitychange', handleVisibilityChange)
+        window.removeEventListener('online', handleOnline)
+        window.removeEventListener('pageshow', handlePageShow)
+      }
+    }, [])
+
+    useEffect(() => {
       if (!subRequests.length || !active) return
 
       async function init() {
-        setInitialLoading(true)
+        const since = sinceRef.current
+        if (!since) {
+          setInitialLoading(true)
+        }
 
         if (showKinds?.length === 0 && subRequests.every(({ filter }) => !filter.kinds)) {
           return () => {}
         }
 
-        const since = sinceRef.current
-
-        if (isPubkeyFeed) {
+        if (isPubkeyFeed && !since) {
           const storedEvents = await client.getEventsFromIndexed({
             authors: subRequests.flatMap(({ filter }) => filter.authors ?? []),
             kinds: showKinds,
@@ -512,7 +558,7 @@ const NoteList = forwardRef<
       return () => {
         promise.then((closer) => closer())
       }
-    }, [JSON.stringify(subRequests), refreshCount, JSON.stringify(showKinds), active])
+    }, [JSON.stringify(subRequests), refreshCount, resumeCount, JSON.stringify(showKinds), active])
 
     const handleLoadMore = useCallback(async () => {
       if (!timelineKey || areAlgoRelays) return false
